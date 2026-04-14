@@ -1,0 +1,107 @@
+---
+# Docker Compose deployment for HashiCorp Vault with Consul storage backend.
+#
+# Services:
+#   - consul: Consul agent (server mode) providing the Vault storage backend.
+#   - vault:  Vault server in production mode backed by Consul.
+#   - vault-ui: (Optional) Lightweight reverse proxy exposing the Vault UI.
+#
+# Usage:
+#   cp .env.example .env
+#   docker compose -f docker/docker-compose.yml up -d
+#   ./scripts/init-vault.sh
+#
+# Notes:
+#   * TLS is disabled on the Vault listener for local development only. Enable
+#     TLS before running anywhere outside a developer laptop.
+#   * Audit logging is configured by ./scripts/init-vault.sh after first unseal.
+
+version: "3.9"
+
+networks:
+  vault-net:
+    driver: bridge
+
+volumes:
+  consul-data:
+    driver: local
+  vault-file:
+    driver: local
+  vault-logs:
+    driver: local
+
+services:
+  consul:
+    image: hashicorp/consul:1.17
+    container_name: vsm-consul
+    restart: unless-stopped
+    networks:
+      - vault-net
+    ports:
+      - "8500:8500"   # HTTP API / UI
+      - "8600:8600/udp" # DNS
+    volumes:
+      - consul-data:/consul/data
+      - ./consul/config.json:/consul/config/config.json:ro
+    command:
+      - "agent"
+      - "-config-file=/consul/config/config.json"
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: vsm-vault
+    restart: unless-stopped
+    depends_on:
+      consul:
+        condition: service_healthy
+    networks:
+      - vault-net
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK  # Prevent Vault memory from being swapped to disk.
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_API_ADDR: "http://vault:8200"
+      VAULT_CLUSTER_ADDR: "https://vault:8201"
+      VAULT_LOG_LEVEL: "${VAULT_LOG_LEVEL:-info}"
+    volumes:
+      - vault-file:/vault/file
+      - vault-logs:/vault/logs
+      - ./vault/config.hcl:/vault/config/config.hcl:ro
+    command:
+      - "server"
+      - "-config=/vault/config/config.hcl"
+    healthcheck:
+      # 0 = initialized + unsealed, 2 = standby, 501 = not initialized,
+      # 503 = sealed. We treat 0/2/501/503 as "container is alive".
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  vault-ui:
+    # Vault's own UI is served on 8200/ui. This service is a tiny nginx proxy
+    # that serves a friendlier landing page pointing to the Vault UI and
+    # Consul UI. Disable by setting COMPOSE_PROFILES=- in .env.
+    image: nginx:1.25-alpine
+    container_name: vsm-ui
+    restart: unless-stopped
+    depends_on:
+      - vault
+      - consul
+    networks:
+      - vault-net
+    ports:
+      - "8080:80"
+    profiles:
+      - ui
+    volumes:
+      - ./vault-ui/index.html:/usr/share/nginx/html/index.html:ro

@@ -1,0 +1,35 @@
+{
+  "_comment": "Consul agent config backing the Vault storage subsystem. Single-node bootstrap suitable for local development only.",
+  "datacenter": "dc1",
+  "data_dir": "/consul/data",
+  "log_level": "INFO",
+  "node_name": "vsm-consul",
+  "server": true,
+  "bootstrap_expect": 1,
+  "ui_config": {
+    "enabled": true
+  },
+  "client_addr": "0.0.0.0",
+  "bind_addr": "0.0.0.0",
+  "advertise_addr": "{{ GetInterfaceIP \"eth0\" }}",
+  "ports": {
+    "http": 8500,
+    "dns": 8600,
+    "serf_lan": 8301,
+    "serf_wan": 8302,
+    "server": 8300
+  },
+  "performance": {
+    "raft_multiplier": 1
+  },
+  "connect": {
+    "enabled": false
+  },
+  "telemetry": {
+    "prometheus_retention_time": "24h",
+    "disable_hostname": true
+  },
+  "limits": {
+    "http_max_conns_per_client": 200
+  }
+}
