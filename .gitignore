@@ -1,0 +1,56 @@
+# --- Vault artifacts -----------------------------------------------------
+# Unseal keys + root token written by scripts/init-vault.sh. NEVER commit.
+.vault/
+vault-init.json
+
+# Vault CLI token cache
+.vault-token
+
+# Local env overrides
+.env
+.env.local
+.env.*.local
+
+# --- Terraform -----------------------------------------------------------
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Docker --------------------------------------------------------------
+# Local compose overrides (developers keep these out of VCS).
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# --- OS / editor noise ---------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Logs / dumps --------------------------------------------------------
+*.log
+logs/
+audit.log
+
+# --- Python scripts (future use) ----------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Build artifacts -----------------------------------------------------
+dist/
+build/
