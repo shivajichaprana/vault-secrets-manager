@@ -1,0 +1,242 @@
+# github-actions-vault.yml — Example GitHub Actions workflow using Vault for secrets
+# Demonstrates AppRole authentication to retrieve secrets for CI/CD pipelines.
+# No long-lived tokens or hardcoded secrets — credentials are dynamic and short-lived.
+#
+# Prerequisites:
+#   1. Store VAULT_ROLE_ID and VAULT_SECRET_ID as GitHub repository secrets
+#   2. Ensure Vault is network-reachable from GitHub Actions runners
+#   3. AppRole must be configured with appropriate policies (see terraform/policies/)
+
+name: Deploy with Vault Secrets
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+  KV_MOUNT: secret
+
+jobs:
+  # ─── Retrieve secrets and run tests ─────────────────────────────────────────
+  test:
+    name: Test with Vault Secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq curl
+
+      - name: Authenticate to Vault via AppRole
+        id: vault-auth
+        run: |
+          # Authenticate and get a short-lived token
+          RESPONSE=$(curl -s --fail --max-time 10 \
+            --request POST \
+            --data "{\"role_id\":\"${{ secrets.VAULT_ROLE_ID }}\",\"secret_id\":\"${{ secrets.VAULT_SECRET_ID }}\"}" \
+            "${VAULT_ADDR}/v1/auth/approle/login")
+
+          VAULT_TOKEN=$(echo "$RESPONSE" | jq -r '.auth.client_token')
+
+          if [ -z "$VAULT_TOKEN" ] || [ "$VAULT_TOKEN" = "null" ]; then
+            echo "::error::Vault AppRole authentication failed"
+            exit 1
+          fi
+
+          # Mask the token so it never appears in logs
+          echo "::add-mask::${VAULT_TOKEN}"
+          echo "vault_token=${VAULT_TOKEN}" >> "$GITHUB_OUTPUT"
+
+          TTL=$(echo "$RESPONSE" | jq -r '.auth.lease_duration')
+          echo "::notice::Vault token acquired (TTL: ${TTL}s)"
+
+      - name: Retrieve application secrets
+        id: secrets
+        run: |
+          TOKEN="${{ steps.vault-auth.outputs.vault_token }}"
+
+          # Retrieve database credentials
+          DB_SECRET=$(curl -s --fail \
+            -H "X-Vault-Token: ${TOKEN}" \
+            "${VAULT_ADDR}/v1/${KV_MOUNT}/data/apps/web/database" \
+            | jq -r '.data.data')
+
+          DB_HOST=$(echo "$DB_SECRET" | jq -r '.host // "localhost"')
+          DB_PORT=$(echo "$DB_SECRET" | jq -r '.port // "5432"')
+          DB_NAME=$(echo "$DB_SECRET" | jq -r '.database // "app"')
+          DB_USER=$(echo "$DB_SECRET" | jq -r '.username // empty')
+          DB_PASS=$(echo "$DB_SECRET" | jq -r '.password // empty')
+
+          # Mask sensitive values
+          echo "::add-mask::${DB_PASS}"
+          echo "::add-mask::${DB_USER}"
+
+          # Export for subsequent steps
+          {
+            echo "DB_HOST=${DB_HOST}"
+            echo "DB_PORT=${DB_PORT}"
+            echo "DB_NAME=${DB_NAME}"
+            echo "DB_USER=${DB_USER}"
+            echo "DB_PASS=${DB_PASS}"
+          } >> "$GITHUB_ENV"
+
+          # Retrieve API keys
+          API_SECRET=$(curl -s --fail \
+            -H "X-Vault-Token: ${TOKEN}" \
+            "${VAULT_ADDR}/v1/${KV_MOUNT}/data/apps/web/api-key" \
+            | jq -r '.data.data')
+
+          API_KEY=$(echo "$API_SECRET" | jq -r '.api_key // empty')
+          echo "::add-mask::${API_KEY}"
+          echo "API_KEY=${API_KEY}" >> "$GITHUB_ENV"
+
+          echo "::notice::Successfully retrieved application secrets from Vault"
+
+      - name: Run tests with Vault-provided secrets
+        run: |
+          echo "Running tests with database at ${DB_HOST}:${DB_PORT}/${DB_NAME}"
+          # Tests use the environment variables set in the previous step
+          # DB_USER, DB_PASS, and API_KEY are available but masked in logs
+          # Example: pytest, go test, npm test, etc.
+          echo "Tests would run here with live credentials"
+
+      - name: Revoke Vault token
+        if: always()
+        run: |
+          # Always revoke the token, even if previous steps failed
+          TOKEN="${{ steps.vault-auth.outputs.vault_token }}"
+          if [ -n "$TOKEN" ] && [ "$TOKEN" \!= "null" ]; then
+            curl -s --request POST \
+              -H "X-Vault-Token: ${TOKEN}" \
+              "${VAULT_ADDR}/v1/auth/token/revoke-self" || true
+            echo "::notice::Vault token revoked"
+          fi
+
+  # ─── Deploy with dynamic database credentials ──────────────────────────────
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment || 'staging' }}
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 20
+
+    environment:
+      name: ${{ github.event.inputs.environment || 'staging' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Vault
+        id: vault-auth
+        run: |
+          RESPONSE=$(curl -s --fail --max-time 10 \
+            --request POST \
+            --data "{\"role_id\":\"${{ secrets.VAULT_ROLE_ID }}\",\"secret_id\":\"${{ secrets.VAULT_SECRET_ID }}\"}" \
+            "${VAULT_ADDR}/v1/auth/approle/login")
+
+          VAULT_TOKEN=$(echo "$RESPONSE" | jq -r '.auth.client_token')
+          echo "::add-mask::${VAULT_TOKEN}"
+          echo "vault_token=${VAULT_TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Get dynamic database credentials
+        id: db-creds
+        run: |
+          TOKEN="${{ steps.vault-auth.outputs.vault_token }}"
+
+          # Request short-lived read-write credentials from the database secrets engine
+          DB_CREDS=$(curl -s --fail \
+            -H "X-Vault-Token: ${TOKEN}" \
+            "${VAULT_ADDR}/v1/database/creds/app-readwrite" \
+            | jq -r '.data')
+
+          DB_USER=$(echo "$DB_CREDS" | jq -r '.username')
+          DB_PASS=$(echo "$DB_CREDS" | jq -r '.password')
+
+          echo "::add-mask::${DB_PASS}"
+          echo "::add-mask::${DB_USER}"
+
+          echo "DB_USER=${DB_USER}" >> "$GITHUB_ENV"
+          echo "DB_PASS=${DB_PASS}" >> "$GITHUB_ENV"
+
+          LEASE_ID=$(echo "$DB_CREDS" | jq -r '.lease_id // empty')
+          echo "lease_id=${LEASE_ID}" >> "$GITHUB_OUTPUT"
+
+          echo "::notice::Dynamic database credentials acquired"
+
+      - name: Run database migrations
+        run: |
+          echo "Running migrations with dynamic credentials..."
+          # Example: flyway, alembic, goose, etc.
+          # These credentials auto-expire after the configured TTL
+          echo "Migrations would run here"
+
+      - name: Deploy application
+        run: |
+          echo "Deploying to ${{ github.event.inputs.environment || 'staging' }}..."
+          # Application deployment logic here
+          echo "Deployment complete"
+
+      - name: Cleanup — revoke credentials
+        if: always()
+        run: |
+          TOKEN="${{ steps.vault-auth.outputs.vault_token }}"
+
+          # Revoke the database credential lease
+          LEASE_ID="${{ steps.db-creds.outputs.lease_id }}"
+          if [ -n "$LEASE_ID" ]; then
+            curl -s --request PUT \
+              -H "X-Vault-Token: ${TOKEN}" \
+              --data "{\"lease_id\":\"${LEASE_ID}\"}" \
+              "${VAULT_ADDR}/v1/sys/leases/revoke" || true
+          fi
+
+          # Revoke the Vault token
+          curl -s --request POST \
+            -H "X-Vault-Token: ${TOKEN}" \
+            "${VAULT_ADDR}/v1/auth/token/revoke-self" || true
+          echo "::notice::All Vault credentials revoked"
+
+  # ─── Scheduled secret rotation check ────────────────────────────────────────
+  rotation-check:
+    name: Verify Secret Rotation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check secret freshness
+        run: |
+          # Use the ci-auth.sh script for authentication
+          chmod +x scripts/ci-auth.sh
+
+          # Retrieve secrets and check rotation timestamps
+          export VAULT_ROLE_ID="${{ secrets.VAULT_ROLE_ID }}"
+          export VAULT_SECRET_ID="${{ secrets.VAULT_SECRET_ID }}"
+          export SECRET_PATHS="apps/web/database,apps/web/api-key,apps/worker/credentials"
+
+          SECRETS_JSON=$(./scripts/ci-auth.sh --format json --paths "$SECRET_PATHS" 2>/dev/null)
+
+          # Check if any secrets are overdue for rotation (older than 30 days)
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key | endswith("_ROTATED_AT")) | "\(.key): \(.value)"'
