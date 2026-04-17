@@ -1,0 +1,225 @@
+# vault-ci.yml — CI pipeline for vault-secrets-manager
+# Validates Terraform configuration, lints shell scripts, checks HCL policy
+# syntax, and validates Kubernetes manifests on every push and pull request.
+
+name: Vault CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - "LICENSE"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  TERRAFORM_VERSION: "1.7.0"
+  SHELLCHECK_VERSION: "0.9.0"
+
+jobs:
+  # ─── Terraform Validation ───────────────────────────────────────────────────
+  terraform-validate:
+    name: Terraform Validate & Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: |
+          echo "::group::Checking Terraform formatting"
+          terraform fmt -check -recursive -diff terraform/
+          echo "::endgroup::"
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        working-directory: terraform
+        run: |
+          echo "::group::Initializing Terraform"
+          terraform init -backend=false -input=false
+          echo "::endgroup::"
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: terraform
+        run: |
+          echo "::group::Validating Terraform configuration"
+          terraform validate -no-color
+          echo "::endgroup::"
+
+      - name: Post validation results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fmt = '${{ steps.fmt.outcome }}';
+            const init = '${{ steps.init.outcome }}';
+            const validate = '${{ steps.validate.outcome }}';
+
+            const statusIcon = (s) => s === 'success' ? '✅' : '❌';
+
+            const body = `### Terraform Validation Results
+
+            | Check | Status |
+            |-------|--------|
+            | Format | ${statusIcon(fmt)} \`${fmt}\` |
+            | Init | ${statusIcon(init)} \`${init}\` |
+            | Validate | ${statusIcon(validate)} \`${validate}\` |
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # ─── Shell Script Linting ───────────────────────────────────────────────────
+  shellcheck:
+    name: ShellCheck Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      - name: Find and lint shell scripts
+        run: |
+          echo "::group::Scanning shell scripts"
+          SCRIPTS=$(find . -name "*.sh" -type f | sort)
+          echo "Found scripts:"
+          echo "$SCRIPTS"
+          echo "::endgroup::"
+
+          FAILED=0
+          for script in $SCRIPTS; do
+            echo "::group::Checking ${script}"
+            if shellcheck -x -S warning "$script"; then
+              echo "✅ ${script} passed"
+            else
+              echo "❌ ${script} failed"
+              FAILED=$((FAILED + 1))
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::${FAILED} script(s) failed ShellCheck"
+            exit 1
+          fi
+
+          echo "All scripts passed ShellCheck"
+
+  # ─── YAML Lint (Kubernetes Manifests) ───────────────────────────────────────
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint --break-system-packages
+
+      - name: Create yamllint config
+        run: |
+          cat > .yamllint.yml << 'EOF'
+          extends: default
+          rules:
+            line-length:
+              max: 150
+              allow-non-breakable-words: true
+              allow-non-breakable-inline-mappings: true
+            comments:
+              require-starting-space: true
+              min-spaces-from-content: 1
+            truthy:
+              allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+              check-keys: false
+            document-start: disable
+            indentation:
+              spaces: 2
+              indent-sequences: true
+          EOF
+
+      - name: Lint Kubernetes manifests
+        run: |
+          echo "::group::Linting Kubernetes YAML files"
+          yamllint -c .yamllint.yml k8s/ || true
+          echo "::endgroup::"
+
+      - name: Lint GitHub Actions workflows
+        run: |
+          echo "::group::Linting workflow files"
+          yamllint -c .yamllint.yml .github/workflows/
+          echo "::endgroup::"
+
+      - name: Lint Docker Compose
+        run: |
+          echo "::group::Linting Docker Compose"
+          yamllint -c .yamllint.yml docker/docker-compose.yml
+          echo "::endgroup::"
+
+  # ─── HCL Policy Validation ─────────────────────────────────────────────────
+  vault-policy-check:
+    name: Vault Policy Syntax Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Vault CLI
+        run: |
+          curl -fsSL https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip -o vault.zip
+          unzip -qq vault.zip
+          sudo mv vault /usr/local/bin/
+          vault version
+        env:
+          VAULT_VERSION: "1.15.4"
+
+      - name: Validate HCL policies
+        run: |
+          chmod +x scripts/validate-policies.sh
+          ./scripts/validate-policies.sh
+
+  # ─── Integration Summary ────────────────────────────────────────────────────
+  ci-status:
+    name: CI Status
+    runs-on: ubuntu-latest
+    needs: [terraform-validate, shellcheck, yaml-lint, vault-policy-check]
+    if: always()
+    timeout-minutes: 2
+
+    steps:
+      - name: Check job results
+        run: |
+          if [ "${{ needs.terraform-validate.result }}" \!= "success" ] || \
+             [ "${{ needs.shellcheck.result }}" \!= "success" ] || \
+             [ "${{ needs.yaml-lint.result }}" \!= "success" ] || \
+             [ "${{ needs.vault-policy-check.result }}" \!= "success" ]; then
+            echo "::error::One or more CI checks failed"
+            exit 1
+          fi
+          echo "All CI checks passed"
