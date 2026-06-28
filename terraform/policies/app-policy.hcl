@@ -13,7 +13,7 @@
 # ---------------------------------------------------------------------------
 
 # Read any version under the apps/ prefix. Specific apps get narrower
-# policies in production; this broad read is suitable for the Day-20 sample.
+# policies in production; this broad read is suitable for the sample setup.
 path "secret/data/apps/*" {
   capabilities = ["read"]
 }
