@@ -1,7 +1,7 @@
 # variables.tf
 # Input variables for the vault-secrets-manager Terraform module.
 #
-# Defaults target the local Docker Compose Vault from Day 19. For any other
+# Defaults target the local Docker Compose Vault. For any other
 # environment (staging, prod), override these via terraform.tfvars or -var
 # flags. Sensitive values must never be hard-coded in a tfvars file that is
 # committed to source control.

@@ -1,7 +1,7 @@
 # app-policy.hcl
 #
 # Scope: application workloads running on Kubernetes. The External Secrets
-# Operator (see Day 21) authenticates via the kubernetes/ auth method and
+# Operator authenticates via the kubernetes/ auth method and
 # assumes this policy to sync secrets into K8s `Secret` objects.
 #
 # Applications can READ their own config under secret/data/apps/<app>/* and
@@ -36,7 +36,7 @@ path "secret/metadata/shared/apps/*" {
 # ---------------------------------------------------------------------------
 
 # Apps request a time-bound DB username/password pair. The role itself is
-# provisioned in Day 22 and carries the per-app SQL grants.
+# provisioned by the database secrets engine and carries the per-app SQL grants.
 path "database/creds/app-readwrite" {
   capabilities = ["read"]
 }
@@ -56,7 +56,7 @@ path "database/creds/*" {
 # ---------------------------------------------------------------------------
 
 # Apps commonly need to encrypt/decrypt with keys they cannot export. The
-# transit engine is not enabled in Day 20 but this rule is pre-wired so the
+# transit engine is not enabled by default but this rule is pre-wired so the
 # app policy does not need to change when it is.
 path "transit/encrypt/app-*" {
   capabilities = ["update"]

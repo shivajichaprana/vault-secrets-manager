@@ -9,7 +9,7 @@
 #                   The AWS root credentials themselves are written to the
 #                   engine's /config/root endpoint out-of-band (see
 #                   scripts/seed-secrets.sh); they are NOT committed here.
-#   * Database   -- dynamic database credentials (PostgreSQL in Day 22).
+#   * Database   -- dynamic database credentials (e.g. PostgreSQL).
 
 # ---------------------------------------------------------------------------
 # KV v2
@@ -74,7 +74,7 @@ resource "vault_aws_secret_backend_role" "readonly_sample" {
 resource "vault_mount" "database" {
   path                      = var.database_mount_path
   type                      = "database"
-  description               = "Dynamic database credentials (Day 22 wires up a PostgreSQL connection)."
+  description               = "Dynamic database credentials (e.g. a PostgreSQL connection)."
   default_lease_ttl_seconds = 3600  # 1 hr
   max_lease_ttl_seconds     = 86400 # 24 hr
 }

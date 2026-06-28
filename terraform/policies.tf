@@ -4,7 +4,7 @@
 #
 # Splitting policy definitions out into their own .hcl files keeps them
 # readable (no string escaping) and lets operators lint them with
-# `vault policy fmt` (wired up in Day 23).
+# `vault policy fmt` (also checked in CI).
 
 resource "vault_policy" "ci_cd" {
   name   = "ci-cd"

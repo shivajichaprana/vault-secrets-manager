@@ -59,8 +59,8 @@ resource "vault_auth_backend" "kubernetes" {
 }
 
 # Wire up the auth backend to a real cluster only when the operator has
-# supplied the cluster details. This lets the module work locally (Day 20)
-# without an actual K8s cluster, and be tightened up in Day 21.
+# supplied the cluster details. This lets the module work locally without
+# an actual K8s cluster, and be tightened up once those details exist.
 resource "vault_kubernetes_auth_backend_config" "this" {
   count = var.kubernetes_host == "" ? 0 : 1
 
